@@ -21,6 +21,11 @@ namespace HAILogger
             Global.hai_time_interval = ValidateInt(settings, "hai_time_interval");
             Global.hai_time_drift = ValidateInt(settings, "hai_time_drift");
 
+            // Mqtt
+            Global.mqtt_logging = ValidateYesNo(settings, "mqtt_logging");
+            Global.mqtt_address = settings["mqtt_address"];
+            Global.mqtt_prefix = settings["mqtt_prefix"];
+            
             // mySQL Database
             Global.mysql_logging = ValidateYesNo(settings, "mysql_logging");
             Global.mysql_connection = settings["mysql_connection"];

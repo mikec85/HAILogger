@@ -20,6 +20,12 @@ namespace HAILogger
         public static int hai_time_interval;
         public static int hai_time_drift;
 
+        // Mqtt
+        public static bool mqtt_logging;
+        public static string mqtt_address;
+        public static string mqtt_prefix;
+        //public static string mqtt_path;
+
         // mySQL Database
         public static bool mysql_logging;
         public static string mysql_connection;

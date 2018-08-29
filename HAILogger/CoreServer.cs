@@ -6,6 +6,10 @@ using System.Data.Odbc;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using uPLibrary.Networking.M2Mqtt;
+using uPLibrary.Networking.M2Mqtt.Messages;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 
 namespace HAILogger
 {
@@ -35,12 +39,23 @@ namespace HAILogger
         private Queue<string> mysql_queue = new Queue<string>();
         private object mysql_lock = new object();
 
+        // MQTT
+
+        MqttClient mqttclient;
+        string clientId = Guid.NewGuid().ToString();
+        string strValue;
+
         public CoreServer()
         {
             Thread handler = new Thread(Server);
             handler.Start();
         }
-
+        internal class Product
+        {
+            public ushort id { get; set; }
+            public string name { get; set; }
+            public string status { get; set; }
+        }
         private void Server()
         {
             Event.WriteInfo("CoreServer", "Starting up server " +
@@ -51,7 +66,7 @@ namespace HAILogger
 
             tsync_timer.Elapsed += tsync_timer_Elapsed;
             tsync_timer.AutoReset = false;
-
+            
             if (Global.mysql_logging)
             {
                 Event.WriteInfo("DatabaseLogger", "Connecting to database");
@@ -61,14 +76,26 @@ namespace HAILogger
                 // Must make an initial connection
                 if (!DBOpen())
                     Environment.Exit(1);
-            }
+            } 
 
             HAC = new clsHAC();
 
             WebService web = new WebService(HAC);
+                       
 
             if (Global.webapi_enabled)
                 web.Start();
+
+            if (Global.mqtt_logging)
+            {
+                mqttclient = new MqttClient(Global.mqtt_address);
+                MqttService mqttsrv = new MqttService(HAC);
+                mqttsrv.Start();
+            }
+            else
+            {
+                Event.WriteInfo("MqttServer", "Mqtt Logging off ");
+            }
 
             Connect();
 
@@ -201,6 +228,11 @@ namespace HAILogger
                 HAC.Connection.ConnectionType = enuOmniLinkConnectionType.Network_TCP;
 
                 HAC.Connection.Connect(HandleConnectStatus, HandleUnsolicitedPackets);
+            }
+
+            if (Global.mqtt_logging)
+            {
+                mqttclient.Connect(clientId);
             }
         }
 
@@ -414,6 +446,16 @@ namespace HAILogger
             if ((B.Length > 3) && (B[2] == (byte)enuOmniLink2MessageType.SystemInformation))
             {
                 clsOL2MsgSystemInformation MSG = new clsOL2MsgSystemInformation(HAC.Connection, B);
+
+                foreach (enuModel enu in Enum.GetValues(typeof(enuModel)))
+                {
+                    if (enu == MSG.ModelNumber)
+                    {
+                        HAC.Model = enu;
+                        break;
+                    }
+                }
+
                 if (HAC.Model == MSG.ModelNumber)
                 {
                     HAC.CopySystemInformation(MSG);
@@ -1015,6 +1057,16 @@ namespace HAILogger
 
             if (Global.verbose_event)
                 Event.WriteVerbose("SystemEvent", type.ToString() + " " + value);
+
+            if (Global.mqtt_logging)
+            {
+                Product product = new Product();
+                product.name = type.ToString();
+                product.id = 0;
+                product.status = value;
+                string json = JsonConvert.SerializeObject(product);
+                mqttclient.Publish(Global.mqtt_prefix + "/systemevent", Encoding.UTF8.GetBytes(json), MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+            }
         }
 
         private void LogAreaStatus(ushort id)
@@ -1102,6 +1154,16 @@ namespace HAILogger
                     unit.AreaFireAlarmText + "','" + unit.AreaBurglaryAlarmText + "','" + unit.AreaAuxAlarmText + "','" +
                     unit.AreaDuressAlarmText + "','" + status + "')");
 
+            if (Global.mqtt_logging)
+            {
+                Product product = new Product();
+                product.name = unit.Name;
+                product.id = id;
+                product.status = status;
+                string json = JsonConvert.SerializeObject(product);
+                mqttclient.Publish(Global.mqtt_prefix + "/areastatus/", Encoding.UTF8.GetBytes(json) , MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+            }
+
             if (Global.verbose_area)
                 Event.WriteVerbose("AreaStatus", id + " " + unit.Name + ", Status: " + status);
 
@@ -1121,9 +1183,40 @@ namespace HAILogger
             {
                 if (unit.IsTemperatureZone())
                     Event.WriteVerbose("ZoneStatus", id + " " + unit.Name + ", Temp: " + unit.TempText());
+                else if (unit.IsHumidityZone())
+                    Event.WriteVerbose("ZoneStatus", id + " " + unit.Name + ", Humidity: " + unit.TempText());
                 else
                     Event.WriteVerbose("ZoneStatus", id + " " + unit.Name + ", Status: " + unit.StatusText());
             }
+
+            if (Global.mqtt_logging)
+            {
+                Product product = new Product();
+                product.name = unit.Name;
+                product.id = id;
+
+
+                if (unit.IsTemperatureZone())
+                {
+                    product.status = unit.TempText();
+                    string json = JsonConvert.SerializeObject(product);
+                    mqttclient.Publish(Global.mqtt_prefix + "/temp/", Encoding.UTF8.GetBytes(json), MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+                }
+                else if (unit.IsHumidityZone())
+                {
+                    product.status = unit.TempText();
+                    string json = JsonConvert.SerializeObject(product);
+                    mqttclient.Publish(Global.mqtt_prefix + "/hum/", Encoding.UTF8.GetBytes(json), MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+
+                }
+                else
+                {
+                    product.status = unit.StatusText();
+                    string json = JsonConvert.SerializeObject(product);
+                    mqttclient.Publish(Global.mqtt_prefix + "/zonestatus/", Encoding.UTF8.GetBytes(json), MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+                }
+            }
+
         }
 
         private void LogThermostatStatus(ushort id)
@@ -1175,6 +1268,16 @@ namespace HAILogger
                     status, statusvalue, statustime)
                 VALUES ('" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "','" + id.ToString() + "','" + unit.Name + "','" +
                     status + "','" + unit.Status + "','" + unit.StatusTime + "')");
+            if (Global.mqtt_logging)
+            {
+                Product product = new Product();
+                product.name = unit.Name;
+                product.id = id;
+                product.status = status;
+
+                string json = JsonConvert.SerializeObject(product);
+                mqttclient.Publish(Global.mqtt_prefix + "/unit/", Encoding.UTF8.GetBytes(json), MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+            }
 
             if (Global.verbose_unit)
                 Event.WriteVerbose("UnitStatus", id + " " + unit.Name + ", Status: " + status);
@@ -1188,6 +1291,16 @@ namespace HAILogger
                 INSERT INTO log_messages (timestamp, id, name, status)
                 VALUES ('" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "','" + id.ToString() + "','" + unit.Name + "','" + unit.StatusText() + "')");
 
+            if (Global.mqtt_logging)
+            {
+                Product product = new Product();
+                product.name = unit.Name;
+                product.id = id;
+                product.status = unit.StatusText();
+
+                string json = JsonConvert.SerializeObject(product);
+                mqttclient.Publish(Global.mqtt_prefix + "/message/", Encoding.UTF8.GetBytes(json), MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, false);
+            }
             if (Global.verbose_message)
                 Event.WriteVerbose("MessageStatus", unit.Name + ", " + unit.StatusText());
 

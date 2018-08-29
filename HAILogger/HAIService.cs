@@ -220,11 +220,12 @@ namespace HAILogger
                 WebService.HAC.SendCommand(enuUnitCommand.Level, BitConverter.GetBytes(unit.value)[0], unit.id);
         }
 
-
+        
         public void SetUnitKeypadPress(CommandContract unit)
         {
             Event.WriteVerbose("WebService", "SetUnitKeypadPress: " + unit.id + " to " + unit.value + " button");
             WebService.HAC.SendCommand(enuUnitCommand.LutronHomeWorksKeypadButtonPress, BitConverter.GetBytes(unit.value)[0], unit.id);
+            
         }
 
         public List<NameContract> ListThermostats()
